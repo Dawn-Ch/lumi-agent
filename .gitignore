@@ -16,3 +16,6 @@ dist/
 
 # 测试项目
 test_project/
+
+# 仅本地的置顶设计文档 (0_ 前缀, 不推送)
+design docs/0_*.md
