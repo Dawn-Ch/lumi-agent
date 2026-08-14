@@ -17,7 +17,7 @@ from agent.core.schemas.action import Action
 class ParsedOutput:
     """Parser 的统一输出类型。
 
-    五种类型:
+    四种类型:
     - thought:       LLM 的推理过程 (纯文本)
     - action:        LLM 想调用工具 (包含结构化的 Action)
     - final_answer:  LLM 认为任务完成
@@ -29,19 +29,27 @@ class ParsedOutput:
     action: Action | None = None
     error_reason: str = ""
 
+    # LLM 的思考文本 — XMLParser 在解析 action/final_answer 时同步提取
+    # 面向日志记录，不参与 Loop 决策
+    # 命名为 thought_text 而非 thought，避免和工厂方法名冲突 (getattr 陷阱)
+    thought_text: str = ""
+
     # ---- 工厂方法 ----
 
     @classmethod
-    def thought(cls, text: str) -> "ParsedOutput":
-        return cls(type="thought", content=text)
+    def thought_output(cls, text: str) -> "ParsedOutput":
+        """创建 thought 类型输出。"""
+        return cls(type="thought", content=text, thought_text=text)
 
     @classmethod
-    def action_output(cls, action: Action) -> "ParsedOutput":
-        return cls(type="action", action=action)
+    def action_output(cls, action: Action, thought_text: str = "") -> "ParsedOutput":
+        """创建 action 类型输出。"""
+        return cls(type="action", action=action, thought_text=thought_text)
 
     @classmethod
-    def final_answer(cls, text: str) -> "ParsedOutput":
-        return cls(type="final_answer", content=text)
+    def final_answer(cls, text: str, thought_text: str = "") -> "ParsedOutput":
+        """创建 final_answer 类型输出。"""
+        return cls(type="final_answer", content=text, thought_text=thought_text)
 
     @classmethod
     def parse_error(cls, reason: str) -> "ParsedOutput":

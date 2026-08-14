@@ -9,6 +9,7 @@
 import os
 import time
 
+import httpx
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -27,7 +28,12 @@ class LLMClient:
 
         base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        # 使用 trust_env=False 的 http client, 让 httpx 不读取系统代理环境变量
+        # 避免 socks 代理 (如 all_proxy) 导致 httpx 初始化崩溃
+        # 注意: 不修改全局 os.environ — 进程内其他代码仍可正常使用代理
+        http_client = httpx.Client(trust_env=False)
+
+        self.client = OpenAI(api_key=api_key, base_url=base_url, http_client=http_client)
         self.model = os.getenv("LLM_MODEL", "gpt-4o")
         self.max_retries = 3
 

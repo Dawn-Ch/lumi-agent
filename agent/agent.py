@@ -11,7 +11,6 @@
 """
 
 import os
-import sys
 from typing import Any
 
 from agent.core.parser.base import Parser, ParsedOutput
@@ -33,6 +32,7 @@ class SWEAgent:
     Usage:
         agent = SWEAgent(working_directory="/path/to/project")
         agent.run("找到所有 TODO 注释并列出它们")
+        agent.run("现在修复这些 TODO")  # 同一实例可多次调用, 每次自动重置状态
     """
 
     def __init__(
@@ -43,15 +43,18 @@ class SWEAgent:
         requires_command_confirm: bool = True,
     ):
         self.working_directory = os.path.abspath(working_directory)
+        self._loop_config = loop_config or LoopConfig()
 
-        # 初始化所有模块
+        # 长生命周期模块 (不随 run() 重置)
         self.prompt_manager = PromptManager(self.working_directory)
         self.llm = LLMClient()
         self.parser = parser or XMLParser()
-        self.loop = LoopController(loop_config)
-        self.logger = AgentLogger()
         self.command_checker = CommandChecker()
         self.requires_command_confirm = requires_command_confirm
+
+        # 短生命周期模块 (构造时创建, 每次 run() 重置)
+        self.loop: LoopController = LoopController(self._loop_config)
+        self.logger: AgentLogger = AgentLogger()
 
         # 注册工具
         self.tools: list[Tool] = [
@@ -63,7 +66,15 @@ class SWEAgent:
         self._tool_map = {t.name: t for t in self.tools}
 
     def run(self, user_input: str) -> str:
-        """运行 Agent，返回最终答案。"""
+        """运行 Agent，返回最终答案。
+
+        每次调用自动重置 loop 和 logger 状态，支持同一实例多次调用。
+        """
+        # 每次 run() 重置 loop 状态、创建新的 logger, 确保同一实例多次调用互不污染
+        # 注意: loop 刚重置完就是 THINKING 状态, 不要再调用 transition_to(THINKING)
+        # (THINKING → THINKING 不在合法转换白名单中, 会抛 ValueError)
+        self.loop.reset()
+        self.logger = AgentLogger()
 
         # 构建初始 messages
         messages: list[dict] = [
@@ -77,9 +88,9 @@ class SWEAgent:
             },
         ]
 
-        self.loop.transition_to(AgentStatus.THINKING)
-
-        while self.loop.status not in (AgentStatus.DONE, AgentStatus.CANCELLED):
+        while self.loop.status not in (
+            AgentStatus.DONE, AgentStatus.STUCK, AgentStatus.CANCELLED
+        ):
             # 检查终止条件
             should_stop, reason = self.loop.check_done()
             if should_stop:
@@ -117,7 +128,6 @@ class SWEAgent:
         # 3. 处理解析结果
         error_msg = self.loop.handle_parse_result(parsed)
         if error_msg:
-            # 解析失败 — 把错误信息喂回 LLM
             print(f"  [解析失败] {error_msg}")
             messages.append({"role": "user", "content": error_msg})
             return  # 保持 THINKING 状态，让 LLM 修正
@@ -125,21 +135,30 @@ class SWEAgent:
         # 4. 根据解析结果行动
         if parsed.type == "thought":
             print(f"  [Thought] {parsed.content[:200]}...")
-            # 纯 thought (没有 action) — 已经由 Parser 转为 parse_error 了
-            return
+            # LLM 只输出了 thought 就停止 (常见于输出被截断)
+            # 提示其继续输出 action 或 final_answer
+            messages.append({
+                "role": "user",
+                "content": (
+                    "你只输出了 <thought> 就停止了。"
+                    "请继续输出 <action> 执行操作，或输出 <final_answer> 完成任务。"
+                ),
+            })
+            return  # 保持 THINKING 状态
 
         elif parsed.type == "final_answer":
             print(f"  [Final Answer] {parsed.content[:200]}...")
             self.loop.transition_to(AgentStatus.DONE)
             self.logger.log_turn(
-                self.loop.turn, final_answer=parsed.content
+                self.loop.turn,
+                thought=parsed.thought_text,
+                final_answer=parsed.content,
             )
             return
 
         elif parsed.type == "action":
             action = parsed.action
             print(f"  [Action] {action}")
-            # 将 action 信息暂存，供 ACTING 状态使用
             self._pending_action = parsed
             self.loop.transition_to(AgentStatus.ACTING)
 
@@ -181,12 +200,13 @@ class SWEAgent:
                         self.loop.transition_to(AgentStatus.THINKING)
                         self.logger.log_turn(
                             self.loop.turn,
+                            thought=parsed.thought_text,
                             action=f"{tool_name}({tool_args})",
                             observation=observation,
                         )
                         return
 
-                # 常规确认 (非高危终端命令也需要确认，安全起见)
+                # 常规确认
                 elif self.requires_command_confirm:
                     print(f"\n  命令: {command}")
                     confirm = input("  是否执行? (y/N): ").strip().lower()
@@ -199,6 +219,7 @@ class SWEAgent:
                         self.loop.transition_to(AgentStatus.THINKING)
                         self.logger.log_turn(
                             self.loop.turn,
+                            thought=parsed.thought_text,
                             action=f"{tool_name}({tool_args})",
                             observation=observation,
                         )
@@ -214,9 +235,11 @@ class SWEAgent:
             else:
                 print(f"  [失败] {observation[:150]}...")
 
-        # 4. 兜圈子检测
+        # 4. 兜圈子检测 — 联合比对 action + observation
         action_key = f"{tool_name}({tool_args})"
-        loop_warning = self.loop.record_action(action_key)
+        loop_warning = self.loop.record_action(
+            action_key, observation_summary=observation
+        )
         if loop_warning:
             observation = loop_warning + "\n\n原始结果:\n" + observation
             print(f"  [兜圈子检测] {loop_warning}")
@@ -227,27 +250,32 @@ class SWEAgent:
             "content": f"<observation>{observation}</observation>",
         })
 
-        # 6. 记录日志
-        # 注意: 不能用 getattr(parsed, 'thought', '') — ParsedOutput.thought 是 classmethod
+        # 6. 记录日志 — 传递 thought_text 字段
         self.logger.log_turn(
             self.loop.turn,
-            thought="",
+            thought=parsed.thought_text,
             action=action_key,
             observation=observation,
         )
 
         # 7. 回到 THINKING 状态
-        self.loop.transition_to(AgentStatus.THINKING)
+        # 兜圈子检测可能已将状态置为 STUCK (终态, 不可再跳转), 此时跳过转换
+        if self.loop.status != AgentStatus.STUCK:
+            self.loop.transition_to(AgentStatus.THINKING)
 
     def _finalize(self) -> str:
         """收尾: 打印日志摘要, 返回最终结果。"""
         print(self.logger.get_summary())
 
-        # 从 messages 中提取最后一个 final_answer (如果有的话)
-        for msg in reversed(self.logger.turns):
-            if msg.final_answer:
-                return msg.final_answer
+        # 从日志中提取最后一个 final_answer
+        for turn in reversed(self.logger.turns):
+            if turn.final_answer:
+                return turn.final_answer
+
+        if self.loop.status == AgentStatus.STUCK:
+            return "Agent 陷入死循环, 已强制终止"
 
         if self.loop.turn >= self.loop.config.max_turns:
             return "任务未完成 (达到最大轮次限制)"
+
         return "任务已终止"

@@ -1,0 +1,158 @@
+# V1 代码审查：已知缺陷与设计不一致
+
+日期：2025-07-26
+
+审查范围：minimal_swe_agent v1（阶段2完成的版本）
+
+---
+
+## 1. 兜圈子检测不够完善
+
+**文件**: `agent/core/loop.py:68-87`
+
+**当前行为**:
+- 仅比较最近 N 个 `action_str`（如 `read_file(file_path="/tmp/x")`）是否完全相同
+- 不比较 observation 内容
+- 检测到后仅返回一条警告字符串，注入 observation 喂回 LLM
+- 没有 `STUCK` 状态——警告后 LLM 仍可能继续兜圈子
+
+**问题**:
+- 同一个 action 搭配不同的 observation 可能是正常的（比如先后读两个不同文件内容的 read_file），不应该算兜圈子
+- 同一个 action + 同样的 observation 才是真正的死循环——当前没有比对 observation
+- 缺少 `STUCK` 终态：如果警告 N 次后 LLM 仍然重复，应有强制终止机制
+- 缺少应对 STUCK 的措施（如：切换策略、回退到上一步、降级为人工介入）
+
+**待改进**:
+1. 兜圈子判定改为 `(action, observation)` 联合比较
+2. 新增 `AgentStatus.STUCK` 状态
+3. 新增 `stuck_action_limit`（连续 stuck 警告次数上限，超过 → 强制 DONE）
+4. STUCK 终止时返回更明确的错误信息（告知用户最后做了什么、为什么 stuck）
+
+---
+
+## 2. Logger 未保存 thought 内容
+
+**文件**: `agent/agent.py:231-235`
+
+```python
+self.logger.log_turn(
+    self.loop.turn,
+    thought="",    # <-- 硬编码空字符串
+    action=action_key,
+    observation=observation,
+)
+```
+
+**问题**:
+- `_handle_thinking` 解析出 thought 后只是 `print` 到终端，没有传递给 logger
+- README 声称"完整运行日志记录"，但实际上 thought 内容完全丢失
+- 排查"LLM 为什么做了某个决策"时，没有 thought 记录就无从追溯
+
+**根因**: `ParsedOutput` 的 `thought` 是 classmethod 工厂方法，和日志字段同名，之前 `getattr(parsed, 'thought', '')` 踩过坑（返回 bound method）。修复时直接写死 `""` 了事，没从根本上解决。
+
+**待改进**: 让 `ParsedOutput` 的 action 类型也携带 thought 文本（或更名 classmethod 避免冲突）
+
+---
+
+## 3. Action 模块注释与实际实现不符
+
+**文件**: `agent/core/schemas/action.py:1`
+
+```python
+"""Action Schema — Pydantic 数据校验层。"""
+```
+
+**实际实现**:
+```python
+from dataclasses import dataclass, field  # 用的是 dataclass，不是 pydantic
+```
+
+**问题**: 注释写"Pydantic 数据校验层"，但 `Action` 和 `ActionValidator` 都是用标准库 `dataclass` 实现的。设计阶段确实讨论过引入 Pydantic 做 schema validation，但实现时没引入这个依赖。
+
+**待改进**: 二选一
+- 引入 Pydantic，改写 Action/ActionValidator（更严格的类型校验）
+- 改注释为 "dataclass 数据校验层"（保持轻量，不引入新依赖）
+
+---
+
+## 4. ParsedOutput 文档说"五种类型"实际是四种
+
+**文件**: `agent/core/parser/base.py:20-21`
+
+```python
+    五种类型:
+    ...
+    type: str  # "thought" | "action" | "final_answer" | "parse_error"
+```
+
+**实际**:
+- `# "thought" | "action" | "final_answer" | "parse_error"` — 只有 4 种
+- 文档写"五种类型"，但代码里的 `type` 字段注释只列了 4 个值
+- `thought` 类型虽然有工厂方法 `ParsedOutput.thought()`，但在 XMLParser 中，纯 thought 会被转为 parse_error
+
+**问题**: 文档和代码不一致。要么是"四种类型"（实际），要么就得加第五种。
+
+---
+
+## 5. 状态转换无合法性校验
+
+**文件**: `agent/core/loop.py:64-66`
+
+```python
+def transition_to(self, new_status: AgentStatus) -> None:
+    """状态转换。"""
+    self.status = new_status
+```
+
+**问题**:
+- 任何代码都可以从任意状态跳到任意状态，没有合法性检查
+- 例如：`transition_to(AgentStatus.THINKING)` 可以在 DONE 之后被调用，状态机被绕过
+- 合法的状态转换图实际是：
+
+```
+THINKING → ACTING    (LLM 输出了 action)
+THINKING → DONE      (LLM 输出了 final_answer)
+ACTING   → THINKING  (工具执行完毕)
+ANY      → CANCELLED (用户取消，任何状态都可以)
+```
+
+- 非法转换举例：`ACTING → ACTING`、`DONE → THINKING`、`CANCELLED → ACTING`
+- 当前没有任何防护
+
+**待改进**: `transition_to` 添加合法转换白名单校验，非法转换抛异常或至少打印 warning
+
+---
+
+## 6. run() 调用后状态不重置
+
+**文件**: `agent/agent.py:65-98`
+
+```python
+def run(self, user_input: str) -> str:
+    # ...
+    self.loop.transition_to(AgentStatus.THINKING)
+    while self.loop.status not in (AgentStatus.DONE, AgentStatus.CANCELLED):
+        # ...
+    return self._finalize()
+```
+
+**问题**:
+- `run()` 开始时不重置 `self.loop`（turn 计数、parse_errors 计数、recent_actions 历史）和 `self.logger`（turns 列表）
+- 第一次 `run()` 结束后，`self.loop.turn` 可能停在某个值（如 5），`self.loop.status` 是 DONE
+- 第二次调用 `run()` 时，`transition_to(AgentStatus.THINKING)` 重置了 status，但 `turn` 从 5 开始继续累加，`logger.turns` 里还有上次的日志
+- 导致第二次任务的日志被污染、轮次限制在第一次消耗的基础上继续
+
+**待改进**: `run()` 开头显式重置 `self.loop` 和 `self.logger`，或每次 `run()` 创建新的 LoopController/AgentLogger 实例
+
+---
+
+## 缺陷汇总
+
+| # | 严重程度 | 类型 | 描述 |
+|---|---------|------|------|
+| 1 | 中 | 功能缺陷 | 兜圈子检测仅比 action 不比 observation，缺少 STUCK 终态 |
+| 2 | 中 | 功能缺失 | Logger 不保存 thought，与 README 描述不一致 |
+| 3 | 低 | 文档/实现不一致 | Action 模块注释写 Pydantic，实际用 dataclass |
+| 4 | 低 | 文档错误 | ParsedOutput 文档说"五种类型"，实际四种 |
+| 5 | 中 | 健壮性缺陷 | 状态转换无合法性校验，任意跳转 |
+| 6 | 高 | Bug | 同一实例重复调用 run() 状态不重置 |
