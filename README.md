@@ -6,13 +6,30 @@
 
 GitHub 仓库现已使用 `lumi-agent`。为保持代码和安装兼容性，Python distribution 仍使用 `minimal-swe-agent`，原有 `SWEAgent` 类与 `swe-agent` 命令继续可用；同时提供 `LumiAgent` 别名与 `lumi-agent` 命令。
 
-## 我为什么做这个
+## 快速开始
 
-一直觉得，当代做 AI/CS 的学生应该自己手写一个 minimal SWE Agent —— 就像老一辈程序员手写编译器、操作系统、数据库一样。这是理解"Agent 到底是什么"最直接的方式。看论文、读博客都能懂个大概，但只有亲手把 Thought → Action → Observation 的循环写成代码，才知道每一环节到底在干什么、哪里会出问题、出了问题怎么修。
+```bash
+git clone https://github.com/Dawn-Ch/lumi-agent.git
+cd lumi-agent
+cp .env.example .env
+# 编辑 .env 填入 API Key
+
+python main.py /path/to/your/project --task "你的任务"
+```
+
+安装为命令行工具后，也可以使用项目称呼启动：
+
+```bash
+lumi-agent /path/to/your/project --task "你的任务"
+```
+
+## 为什么做这个
+
+当代做 AI/CS 的学生应该自己手写一个 minimal SWE Agent —— 就像老一辈程序员手写编译器、操作系统、数据库一样。这是理解"Agent 到底是什么"最直接的方式。看论文、读博客都能懂个大概，但只有亲手把 Thought → Action → Observation 的循环写成代码，才知道每一环节到底在干什么、哪里会出问题、出了问题怎么修。
 
 ## 阶段 1：搞懂基本概念
 
-先读了两篇核心论文：
+两篇核心论文：
 
 - **ReAct**（Yao et al., 2022）：提出 Reasoning + Acting 交错模式。和 Chain-of-Thought 最大的区别是，CoT 想错了就一条路走到黑，ReAct 每想一步就拿真实环境反馈纠正自己。
 - **SWE-Agent**（Yang et al., 2024）：把 ReAct 专门用在软件工程任务上，提出了 ACI（Agent-Computer Interface）概念 —— 给 Agent 设计工具，就像给人类设计 UI 一样重要。
@@ -87,23 +104,50 @@ ast.literal_eval()      → 安全提取字面量，不允许 eval
 - 写入后自动验证 + 搜索结果截断防 context 污染
 - 完整运行日志
 
-## 快速开始
-
-```bash
-git clone https://github.com/Dawn-Ch/lumi-agent.git
-cd lumi-agent
-cp .env.example .env
-# 编辑 .env 填入 API Key
-
-python main.py /path/to/your/project --task "你的任务"
-```
-
-安装为命令行工具后，也可以使用项目称呼启动：
-
-```bash
-lumi-agent /path/to/your/project --task "你的任务"
-```
-
 ## 下一步
 
 分析 Claude Code、Codex CLI 等现代 Coding Agent 的源码，把 memory、multi-agent、background tasks、skills、context compression、sandbox 等机制逐步加进来。从"马车"到"高铁"。
+
+以上截止2026年7月
+
+## 关于状态机
+设置状态机的核心意义，是把 LLM 的不确定行为包裹在一个“可控、可验证的运行时”里。
+
+可以抽象成：
+```
+当前状态 + 外部事件 → 下一状态 + 允许的副作用
+```
+
+例如 Lumi：
+```
+THINKING + 输出 action → ACTING
+ACTING + 工具结果 → THINKING
+THINKING + final_answer → DONE
+```
+
+它主要解决六件事：
+- 控制顺序：模型没产生合法 Action，就不能执行工具。
+- 限制副作用：只有 ACTING 状态允许修改文件、执行命令。
+- 明确终止：完成、失败、超限、兜圈子、取消分别有清晰出口。
+- 支持取消和恢复：知道当前正在请求模型、等待审批还是执行工具。
+- 便于调试：可以回答“Agent 为什么进入这个状态、下一步为什么这样走”。
+- 便于测试：可以测试非法跳转、最大轮次、工具失败、重复操作等边界。
+所以，状态机不是为了让模型“更会思考”，也不是模型思维过程本身；它是 Harness 对模型行为施加的运行时约束。
+
+最初，Lumi未设置状态机，后来了解到状态机可以增强Harness的稳定性，于是在v0.1版中引入了状态机（STATUS MACHINE），暂列了三种状态：
+- THINKING
+- ACTING
+- DONE
+
+后来又引入`STUCK`和`CANCELLED`
+
+（8.15记）不像当前Lumi的状态机中的各个状态是承担整个 Agent 的全部状态，当前主流Agent/Harness（如DSH、Codex、CC等）均设有状态机，而且是分层次的状态机：
+1. 运行生命周期：idle / running / maintenance / cancelled
+2. Turn/Step 循环：queued / running / completed / failed / cancelled
+3. 工具生命周期：pending / approval / running / completed / error
+4. 长任务工作流：goal active / verify / next round / paused / completed
+
+后续计划将状态机拆成`“生命周期状态 + Step 状态 + 工具状态”`，是为了分别回答三个问题：
+1. Agent 是否还在运行？
+2. 当前这一小步处于哪个阶段？
+3. 某个工具调用进行到哪一步？
