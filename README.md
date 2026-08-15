@@ -4,7 +4,7 @@
 
 **Lumi Agent** 是这个项目从 v0.1 起采用的称呼。它只用于交流、界面和文档识别，不改变项目的技术定位：本项目仍然是一个 minimal SWE Agent，继续以最小、透明、可学习的方式探索 Coding Agent 的底层原理。
 
-为保持兼容性，GitHub 仓库和 Python distribution 仍使用 `minimal-swe-agent`，原有 `SWEAgent` 类与 `swe-agent` 命令继续可用；同时新增 `LumiAgent` 别名与 `lumi-agent` 命令。
+GitHub 仓库现已使用 `lumi-agent`。为保持代码和安装兼容性，Python distribution 仍使用 `minimal-swe-agent`，原有 `SWEAgent` 类与 `swe-agent` 命令继续可用；同时提供 `LumiAgent` 别名与 `lumi-agent` 命令。
 
 ## 我为什么做这个
 
@@ -90,8 +90,8 @@ ast.literal_eval()      → 安全提取字面量，不允许 eval
 ## 快速开始
 
 ```bash
-git clone https://github.com/Dawn-Ch/minimal-swe-agent.git
-cd minimal-swe-agent
+git clone https://github.com/Dawn-Ch/lumi-agent.git
+cd lumi-agent
 cp .env.example .env
 # 编辑 .env 填入 API Key
 
