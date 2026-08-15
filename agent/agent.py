@@ -1,4 +1,4 @@
-"""Agent 主类 — 将所有模块组装成完整的 SWE Agent。
+"""Lumi Agent 主类 — 将所有模块组装成完整的 minimal SWE Agent。
 
 这是整个项目的编排层。每个模块职责单一:
 - PromptManager → 组装 prompt
@@ -27,7 +27,7 @@ from agent.llm.client import LLMClient
 
 
 class SWEAgent:
-    """Minimal SWE Agent。
+    """Lumi Agent 的核心实现，一个 minimal SWE Agent。
 
     Usage:
         agent = SWEAgent(working_directory="/path/to/project")
@@ -279,3 +279,7 @@ class SWEAgent:
             return "任务未完成 (达到最大轮次限制)"
 
         return "任务已终止"
+
+
+# 用户可见名称使用 Lumi Agent；保留 SWEAgent 作为原始类名，避免破坏已有调用。
+LumiAgent = SWEAgent

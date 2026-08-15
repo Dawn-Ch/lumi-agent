@@ -1,4 +1,4 @@
-"""入口 — Minimal SWE Agent 的启动脚本。
+"""入口 — Lumi Agent（minimal SWE Agent）的启动脚本。
 
 Usage:
     python main.py /path/to/project          # 交互式输入任务
@@ -13,7 +13,7 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Minimal SWE Agent — 一个用于学习 Agent 原理的最小实现",
+        description="Lumi Agent — 一个用于学习 Agent 原理的 minimal SWE Agent",
     )
     parser.add_argument(
         "directory",
@@ -48,7 +48,7 @@ def main():
         sys.exit(1)
 
     # 导入 Agent (延迟导入, 让 argparse 先跑)
-    from agent.agent import SWEAgent
+    from agent.agent import LumiAgent
     from agent.core.parser.xml_parser import XMLParser
     from agent.core.parser.json_parser import JSONParser
     from agent.core.loop import LoopConfig
@@ -58,7 +58,7 @@ def main():
     parser_impl = JSONParser() if args.parser == "json" else XMLParser()
 
     # 创建 Agent
-    agent = SWEAgent(
+    agent = LumiAgent(
         working_directory=args.directory,
         parser=parser_impl,
         loop_config=loop_config,
@@ -73,7 +73,8 @@ def main():
             print("任务不能为空。")
             sys.exit(1)
 
-    print(f"\n工作目录: {os.path.abspath(args.directory)}")
+    print("\nLumi Agent — minimal SWE Agent")
+    print(f"工作目录: {os.path.abspath(args.directory)}")
     print(f"任务: {task}")
     print(f"Parser: {args.parser}")
     print(f"命令确认: {'开' if not args.no_confirm else '关'}")

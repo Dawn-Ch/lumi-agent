@@ -1,7 +1,7 @@
 [project]
 name = "minimal-swe-agent"
 version = "0.1.0"
-description = "A minimal SWE Agent built from scratch for learning purposes"
+description = "Lumi Agent — a minimal SWE Agent built from scratch for learning purposes"
 requires-python = ">=3.12"
 dependencies = [
     "openai>=1.91.0",
@@ -10,4 +10,5 @@ dependencies = [
 ]
 
 [project.scripts]
+lumi-agent = "main:main"
 swe-agent = "main:main"

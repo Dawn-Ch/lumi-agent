@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 SYSTEM_PROMPT_TEMPLATE = Template("""\
-你是一个软件工程 Agent，负责通过执行工具来解决编程任务。
+你是 Lumi Agent，一个 minimal 软件工程 Agent，负责通过执行工具来解决编程任务。
 
 ## 工作方式
 对于每个任务，使用以下循环模式:
